@@ -4,8 +4,8 @@
  *
  */
 
-#ifndef P1P2_Daikin_json
-#define P1P2_Daikin_json
+#ifndef P1P2_Daikin_ParameterConversion
+#define P1P2_Daikin_ParameterConversion
 
 // these conversion functions look at the current and often also one or more past byte(s) in the byte array
 bool FN_flag8(uint8_t b, uint8_t n)  { return (b >> n) & 0x01; }
@@ -14,6 +14,7 @@ uint16_t FN_u16(uint8_t *b)          { return (                (((uint32_t) b[-1
 int8_t FN_u8delta(uint8_t *b)        { int c=b[0]; if (c & 0x10) return -(c & 0x0F); else return (c & 0x0F); }
 float FN_u8div10(uint8_t *b)         { if (b[-1] == 0xFF) return 0; else return b[0] * 0.1;}
 float FN_u16div10(uint8_t *b)        { if (b[-1] == 0xFF) return 0; else return (b[0] * 0.1 + b[-1] * 25.6);}
+float FN_u16BEdiv10(uint8_t *b)      { if (b[0] == 0xFF) return 0; else return (b[-1] * 0.1 + b[0] * 25.6);}
 float FN_f8_8(uint8_t *b)            { return (((int8_t) b[-1]) + (b[0] * 1.0 / 256)); }
 
 
@@ -161,7 +162,8 @@ bool newmeasuredval(float f, byte i, float hyst1, float hyst2) {
 }
 
 bool newbytesval(byte *rb, byte i, byte k) {
-// returns whether any of bytes (i-k+1) .. byte i in rb has a new value (also returns true if byte has not been saved or if changeonly=0)
+// for non-Fx packages: returns whether any of bytes (i-k+1) .. byte i in rb has a new value (also returns true if byte has not been saved or if changeonly=0)
+// for Fx35/36 packages: returns whether paramnr has a new paramval (also returns true if byte has not been saved or if changeonly=0)
   int8_t shi = savehistoryindex(rb);
   if (shi >= 0) {
     // relevant packet has been saved (at least partially)
@@ -237,7 +239,7 @@ bool newbitval(byte *rb, byte i, byte p) {
 #define newbitval(a, b, c) (1)
 #endif /* SAVEHISTORY */
 
-byte handleparam(char* key, char* value, byte* rb, uint8_t i) {
+/*byte handleparam(char* key, char* value, byte* rb, uint8_t i) {
   uint16_t paramnr = 0;
   uint16_t paramval = 0;
   if (rb[2] == 0x35) {
@@ -246,20 +248,13 @@ byte handleparam(char* key, char* value, byte* rb, uint8_t i) {
   } else if (rb[2] == 0x36) {
     paramnr = (((uint16_t) rb[i-2]) << 8) | rb[i-3];
     paramval = (((uint16_t) rb[i]) << 8) | rb[i-1];
-  }
+  } // else /* should not happen, handleparam is only intended for 0x35/0x36 *//* return 0;
   //TODO if (!outputunknown) return 0;
   if (!newbytesval(rb, i, 0)) return 0;
-  if (paramnr == 0xFFFF) return 0; // no param
-  if (paramnr == 0xA2) return 0; // counter; useless?; TODO  is this device-independent?
 
   // TODO get key for known params
-  // byte rv = paramnr2key(rb, paramnr, paramval, j, key, value);
-  // try to avoid repetition of code execution in bitbasis mode
-
-  snprintf(key, KEYLEN, "P0x%X%X-0x%X%X-0x%X%X-0x%X%X", rb[0] >> 4, rb[0]&0x0F, rb[1] >> 4, rb[1] & 0x0F, rb[2] >> 4, rb[2] & 0x0F, paramnr >> 4, paramnr & 0x0F);
-  snprintf(value, KEYLEN, "0x%2X", paramval);
-  return 1;
-}
+  return  paramnr2keyvalue(rb, i, paramnr, paramval, key, value); // device dependent paramnr/paramval generation
+}*/
 
 byte unknownbyte(char* key, char* value, byte* rb, uint8_t i) {
   if (!outputunknown || !newbytesval(rb, i, 1)) return 0;
@@ -328,6 +323,7 @@ uint8_t value_flag8(byte* rb, uint8_t i, uint8_t j, char* value) {
 #define VALUE_f8s8(cnt, hyst1, hyst2)    { if (!newmeasuredval(FN_f8s8(&rb[i]),    cnt, hyst1, hyst2)) return 0; snprintf(value, KEYLEN, "%1.1f", FN_f8s8(&rb[i]));    return 1; }
 #define VALUE_u8div10(cnt, hyst1, hyst2) { if (!newmeasuredval(FN_u8div10(&rb[i]), cnt, hyst1, hyst2)) return 0; snprintf(value, KEYLEN, "%1.1f", FN_u8div10(&rb[i])); return 1; }
 #define VALUE_u16div10(cnt, hyst1, hyst2){ if (!newmeasuredval(FN_u16div10(&rb[i]),cnt, hyst1, hyst2)) return 0; snprintf(value, KEYLEN, "%1.1f", FN_u16div10(&rb[i]));return 1; }
+#define VALUE_u16BEdiv10(cnt, hyst1, hyst2){ if (!newmeasuredval(FN_u16BEdiv10(&rb[i]),cnt, hyst1, hyst2)) return 0; snprintf(value, KEYLEN, "%1.1f", FN_u16BEdiv10(&rb[i]));return 1; }
 #define VALUE_F(v, cnt, hyst1, hyst2)    { if (changeonly && !newmeasuredval(v,    cnt, hyst1, hyst2)) return 0; snprintf(value, KEYLEN, "%1.1f", v);                  return 1; }
 #else /* RPI */
 // note that snprintf(.. , "%f", ..) is not supported on Arduino/Atmega so use dtostrf instead
@@ -335,13 +331,14 @@ uint8_t value_flag8(byte* rb, uint8_t i, uint8_t j, char* value) {
 #define VALUE_f8s8(cnt, hyst1, hyst2)    { if (!newmeasuredval(FN_f8s8(&rb[i]),    cnt, hyst1, hyst2)) return 0; dtostrf(FN_f8s8(&rb[i]), 1, 1, value);               return 1; }
 #define VALUE_u8div10(cnt, hyst1, hyst2) { if (!newmeasuredval(FN_u8div10(&rb[i]), cnt, hyst1, hyst2)) return 0; dtostrf(FN_u8div10(&rb[i]), 1, 1, value);            return 1; }
 #define VALUE_u16div10(cnt, hyst1, hyst2){ if (!newmeasuredval(FN_u16div10(&rb[i]),cnt, hyst1, hyst2)) return 0; dtostrf(FN_u16div10(&rb[i]), 1, 1, value);           return 1; }
+#define VALUE_u16BEdiv10(cnt, hyst1, hyst2){ if (!newmeasuredval(FN_u16BEdiv10(&rb[i]),cnt, hyst1, hyst2)) return 0; dtostrf(FN_u16BEdiv10(&rb[i]), 1, 1, value);           return 1; }
 #define VALUE_F(v, cnt, hyst1, hyst2)    { if (changeonly && !newmeasuredval(v,    cnt, hyst1, hyst2)) return 0; dtostrf(v, 1, 1, value);                             return 1; }
 #endif /* RPI */
 #define VALUE_H4         { if (!newbytesval(rb, i, 4)) return 0; snprintf(value, KEYLEN, "%X%X%X%X%X%X%X%X", rb[i-3] >> 4, rb[i-3] & 0x0F, rb[i-2] >> 4, rb[i-2] & 0x0F, rb[i-1] >> 4, rb[i-1] & 0x0F, rb[i] >> 4, rb[i] & 0x0F); return 1; }
-#define HANDLEPARAM      { PARAM3x; return handleparam(key, value, rb, i);}
+//#define HANDLEPARAM      { PARAM3x; return handleparam(key, value, rb, i);}
 #define UNKNOWNBYTE      { UNKNOWN; return unknownbyte(key, value, rb, i);}
 #define UNKNOWNBIT       { UNKNOWN; return unknownbit(key, value, rb, i, j);}
 #define BITBASIS_UNKNOWN { switch (j) { case 8 : BITBASIS; default : UNKNOWNBIT; } }
 #define TERMINATEJSON    { return 9; }
 
-#endif /* P1P2_Daikin_json */
+#endif /* P1P2_Daikin_ParameterConversion */

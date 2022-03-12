@@ -4,8 +4,8 @@
  *
  */
 
-#ifndef P1P2_Daikin_json_EHYHB
-#define P1P2_Daikin_json_EHYHB
+#ifndef P1P2_Daikin_ParameterConversion_EHYHB
+#define P1P2_Daikin_ParameterConversion_EHYHB
 
 // history size parameters (only relevant if SAVEHISTORY is defined)
 #define RBHLEN 500   // max #bytes saved to store packet payloads
@@ -20,7 +20,7 @@
 #define RBHLEN   166   // should be >= 1, 166 is sufficient for 0x10..0x16 packets
 #define PARAM35LEN 1     // should be >= 1
 #define RBHNP   14     // should be >= 1, 14 is sufficient for 0x10..0x16 packets
-#define NHYST   15     // nr of values for hysteresis comparison (15 for this model)
+#define NHYST   17     // nr of values for hysteresis comparison (16 for this model)
 #endif /* __AVR_ATmega328P__ */
 
 #define KEYLEN 40    // max length of key/topic or value/payload
@@ -35,10 +35,11 @@ byte SelectTimeString2=0;
 // device dependent code starts here:
 // ----------------------------------
 //
-// to implement json decoding for another product, rename this file and change the following functions:
+// to implement parameter decoding for another product, rename this file and change the following functions:
 // -savehistoryindex() to indicate which packets should be saved
 // -savehistoryignore() to determine how many bytes of a packet can be ignored (usually 3 or 4), 3 seems to be a safe value in case of doubt
 // -the big switch statement in bytes2keyvalue()
+// -the switch statement in paramnr2keyvalue() (for paramnr/paramval in Fx35/Fx36 messages)
 //
 // Some of the code below might turn out to be device-independent, such as savehistoryindex() and savehistoryignore()
 
@@ -117,6 +118,9 @@ byte bytes2keyvalue(byte* rb, byte i, byte j, char* key, char* value, byte &cat)
   byte linesrc = rb[0];
   float P1, P2;      // these variables cannot be declared within the case statement - not sure why not?
   static float LWT = 0, RWT = 0, MWT = 0, Flow = 0;
+  uint16_t paramnr = 0;
+  uint16_t paramval = 0;
+  static float Flow36 = 0;
 
   switch (linetype) {
     case 0x10 : switch (linesrc) {
@@ -492,7 +496,7 @@ byte bytes2keyvalue(byte* rb, byte i, byte j, char* key, char* value, byte &cat)
                               KEY("SecExt");                       MEASUREMENT; VALUE_u8;
         default:              return 0;
       }
-      case 0x40 : switch (i) {                                  // param packet from main controller to external controller
+      case 0x40 : switch (i) {                                  // param/request packet from external controller to main controller
         default:              return 0;
       }
     }
@@ -503,16 +507,40 @@ byte bytes2keyvalue(byte* rb, byte i, byte j, char* key, char* value, byte &cat)
         case 11:              // fallthrough
         case 14:              // fallthrough
         case 17:              // fallthrough
-        case 20:                                                SETTING;     HANDLEPARAM;
+        case 20:
+          SETTING;
+          PARAM3x;
+          paramnr = (((uint16_t) rb[i-1]) << 8) | rb[i-2];
+          paramval = rb[i];
+          if (!newbytesval(rb, i, 0)) return 0;
+          switch (paramnr) {
+            case 0x00A2: // fallthrough, counter?
+            case 0xFFFF: return 0;
+            //? case 0x2E :; //KEY3("Heating1");            SETTING; VALUE_FLAG8;
+            default    : 
+              snprintf(key, KEYLEN, "P0x%X%X-0x%X%X-0x%X%X-0x%X%X", rb[0] >> 4, rb[0]&0x0F, rb[1] >> 4, rb[1] & 0x0F, rb[2] >> 4, rb[2] & 0x0F, paramnr >> 4, paramnr & 0x0F);
+              snprintf(value, KEYLEN, "0x%X%X", paramval >> 4, paramval & 0x0F);
+              return 1;
+          }
         default:              return 0;
       }
-      case 0x40 : switch (i) {                                  // param packet from main controller to external controller
+      case 0x40 : switch (i) {                                  // param/request packet from external controller to main controller
         case 5 :              // fallthrough
         case 8 :              // fallthrough
         case 11:              // fallthrough
         case 14:              // fallthrough
-        case 17:              // fallthrough
-        case 20:                                                SETTING;     HANDLEPARAM;
+        case 17:              // fallthrough */
+        case 20:
+          SETTING;
+          PARAM3x;
+          paramnr = (((uint16_t) rb[i-1]) << 8) | rb[i-2];
+          switch (paramnr) {
+            case 0xFFFF: return 0;
+            default    :
+              snprintf(key, KEYLEN, "P0x%X%X-0x%X%X-0x%X%X-0x%X%X", rb[0] >> 4, rb[0]&0x0F, rb[1] >> 4, rb[1] & 0x0F, rb[2] >> 4, rb[2] & 0x0F, paramnr >> 4, paramnr & 0x0F);
+              snprintf(value, KEYLEN, "0x%X%X", paramval >> 4, paramval & 0x0F);
+              return 1;
+          }
         default:              return 0;
       }
     }
@@ -522,15 +550,42 @@ byte bytes2keyvalue(byte* rb, byte i, byte j, char* key, char* value, byte &cat)
         case 10:              // fallthrough
         case 14:              // fallthrough
         case 18:              // fallthrough
-        case 22:                                                SETTING;     HANDLEPARAM;
+        case 22:                                                
+          SETTING;
+          PARAM3x;
+          paramnr = (((uint16_t) rb[i-2]) << 8) | rb[i-3];
+          paramval = (((uint16_t) rb[i]) << 8) | rb[i-1];
+          if (!newbytesval(rb, i, 0)) return 0;
+          switch (paramnr) {
+            case 0x00A2: // fallthrough, counter?
+            case 0xFFFF: return 0;
+            case 0x0005: // fallthrough
+            case 0x002A: KEY("Flow36");    TEMPFLOWP;   VALUE_u16BEdiv10(15, 0.09, 0.15);
+            case 0x0011: KEY("TempOut36"); TEMPFLOWP;   VALUE_u16BEdiv10(16, 0.04, 0.06);
+            //case 0x2E :; //KEY3("Heating1");            SETTING; VALUE_FLAG8;
+            default    : 
+              snprintf(key, KEYLEN, "P0x%X%X-0x%X%X-0x%X%X-0x%X%X", rb[0] >> 4, rb[0]&0x0F, rb[1] >> 4, rb[1] & 0x0F, rb[2] >> 4, rb[2] & 0x0F, paramnr >> 4, paramnr & 0x0F);
+              snprintf(value, KEYLEN, "0x%X%X", paramval >> 4, paramval & 0x0F);
+              return 1;
+          }
         default:              return 0;
       }
-      case 0x40 : switch (i) {                                  // param packet from main controller to external controller
+      case 0x40 : switch (i) {                                  // param/request packet from external controller to main controller
         case 6 :              // fallthrough
         case 10:              // fallthrough
         case 14:              // fallthrough
         case 18:              // fallthrough
-        case 22:                                                SETTING;     HANDLEPARAM;
+        case 22:
+          SETTING;
+          PARAM3x;
+          paramnr = (((uint16_t) rb[i-2]) << 8) | rb[i-3];
+          switch (paramnr) {
+            case 0xFFFF: return 0;
+            default    :
+              snprintf(key, KEYLEN, "P0x%X%X-0x%X%X-0x%X%X-0x%X%X", rb[0] >> 4, rb[0]&0x0F, rb[1] >> 4, rb[1] & 0x0F, rb[2] >> 4, rb[2] & 0x0F, paramnr >> 4, paramnr & 0x0F);
+              snprintf(value, KEYLEN, "0x%X%X", paramval >> 4, paramval & 0x0F);
+              return 1;
+          }
         default:              return 0;
       }
     }
@@ -538,28 +593,4 @@ byte bytes2keyvalue(byte* rb, byte i, byte j, char* key, char* value, byte &cat)
   }
 }
 
-/* WIP: 
-byte paramnr2key(byte* rb, uint16_t paramnr, uint16_t paramval, byte j, char* key, char* value) {
-// Generates key based on rb, paramnr, j
-// if j=8, byte-based handling is performed
-// if 0<=j<=7, bit-based handling of bit j of byte rb[i] is performed.
-// Upon return, key and value contain the topic/payload for a mqtt message also usable as a key/value for a json message
-// Return value:
-// 0 no value to return
-// 1 (new) value to print/output
-// 8 this byte should be treated on bit basis by calling bits2keyvalue() with 0<=j<=7
-// 9 as return value indicates the json message should be terminated
-//
-
-  byte linetype = rb[2];
-  byte linesrc = rb[0];
-
-  // TODO how to handle bit basis?
-  switch (paramnr) {
-    case 0xA2 : return 0;
-    case 0x2E :; //KEY3("Heating1");            SETTING; VALUE_FLAG8;
-    default:   ;// UNKNOWNBYTE3;;
-  }
-}
-*/
-#endif /* P1P2_Daikin_json_EHYHB */
+#endif /* P1P2_Daikin_ParameterConversion_EHYHB */
